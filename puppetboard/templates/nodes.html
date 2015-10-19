@@ -8,6 +8,7 @@
     <tr>
       <th>Status</th>
       <th>Hostname</th>
+      <th>&nbsp;</th>
       <th>Catalog</th>
       <th>Report</th>
       <th>&nbsp;</th>
@@ -39,6 +40,11 @@
           {% endif %}
       </td>
       <td><a href="{{url_for('node', node_name=node.name)}}">{{node.name}}</a></td>
+      <td>
+        <a href="https://lagerregal.mpib-berlin.mpg.de/{{node.lagerregal}}">
+           <i class='large darkblue archive icon'></i>
+        </a>
+      </td>
       <td><a rel="utctimestamp" href="{{url_for('catalog_node', node_name=node.name)}}">{{node.catalog_timestamp}}</a></td>
       <td>
         {% if node.report_timestamp %}

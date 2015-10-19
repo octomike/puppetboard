@@ -25,7 +25,9 @@
       {% endif %}
       {% if show_value %}
       <td style="word-wrap:break-word">
-        {% if link_facts %}
+        {% if fact.value.startswith('http://') or fact.value.startswith('https:') %}
+          <a href="{{fact.value}}">{{fact.value}}</a>
+        {% elif link_facts %}
           <a href="{{url_for('fact_value', fact=fact.name, value=fact.value)}}">{{fact.value}}</a>
         {% else %}
           {{fact.value}}

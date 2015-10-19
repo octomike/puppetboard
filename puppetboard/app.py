@@ -3,6 +3,7 @@ from __future__ import absolute_import
 
 import logging
 import collections
+import re
 try:
     from urllib import unquote
 except ImportError:
@@ -170,7 +171,16 @@ def nodes():
         unreported=app.config['UNRESPONSIVE_HOURS'],
         with_status=True)
     nodes = []
+    p = re.compile('^lip-.*-.0*([0-9]+)$')
     for node in yield_or_stop(nodelist):
+        ## ugly LIP hack
+        hostname = node.name.split('.mpib-berlin.mpg.de')[0]
+        match = p.match(hostname)
+        if match:
+            node.lagerregal = '/devices/'+match.group(1)
+        else:
+            node.lagerregal = '/search/#searchterm='+hostname
+        ## /hack
         if status_arg:
             if node.status == status_arg:
                 nodes.append(node)
@@ -250,11 +260,16 @@ def node(node_name):
     """
     node = get_or_abort(puppetdb.node, node_name)
     facts = node.facts()
+    try:
+        lagerregal = node.fact('lagerregal_url').value
+    except StopIteration:
+        lagerregal = 'unknown'
     reports = limit_reports(node.reports(), app.config['REPORTS_COUNT'])
     return render_template(
         'node.html',
         node=node,
         facts=yield_or_stop(facts),
+        lagerregal=lagerregal,
         reports=yield_or_stop(reports),
         reports_count=app.config['REPORTS_COUNT'])
 

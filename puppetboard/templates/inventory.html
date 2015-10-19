@@ -16,7 +16,11 @@
     <tr>
  
       {% for item in nodedata[nodename] %}
-      <td>{{item}}</td>
+        {% if item.startswith('http://') or item.startswith('https:') %}
+          <td><a href="{{item}}"><i class='large darkblue archive icon'></i</a></td>
+        {% else %}
+          <td>{{item}}</td>
+        {% endif %}
       {% endfor %}
     </tr>
     {% endfor %}
