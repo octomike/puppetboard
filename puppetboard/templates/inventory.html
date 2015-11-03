@@ -18,6 +18,8 @@
       {% for item in nodedata[nodename] %}
         {% if item.startswith('http://') or item.startswith('https:') %}
           <td><a href="{{item}}"><i class='large darkblue archive icon'></i</a></td>
+        {% elif item=='undef' %}
+          <td><i class="large ban circle icon"></i></td>
         {% else %}
           <td>{{item}}</td>
         {% endif %}

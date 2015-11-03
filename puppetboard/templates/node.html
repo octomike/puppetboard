@@ -11,11 +11,11 @@
             <th>Hostname</th>
             <td style="word-wrap:break-word"><b>{{node.name}}</b></td>
           </tr>
-          {% if lagerregal.startswith('http') %}
+          {% if node.lagerregal.startswith('http') %}
           <tr>
             <th>Lagerregal</th>
             <td style="word-wrap:break-word">
-              <a href="{{lagerregal}}"><b>{{lagerregal}}</b></a>
+              <a href="{{node.lagerregal}}"><b>{{node.lagerregal}}</b></a>
             </td>
           </tr>
           {% endif %}

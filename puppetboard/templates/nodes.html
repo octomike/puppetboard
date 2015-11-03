@@ -41,9 +41,13 @@
       </td>
       <td><a href="{{url_for('node', node_name=node.name)}}">{{node.name}}</a></td>
       <td>
-        <a href="https://lagerregal.mpib-berlin.mpg.de/{{node.lagerregal}}">
-           <i class='large darkblue archive icon'></i>
-        </a>
+        {% if node.lagerregal=='unknown' %}
+          <i class="large ban circle icon"></i>
+        {% else %}
+          <a href="{{node.lagerregal}}">
+             <i class='large darkblue archive icon'></i>
+          </a>
+        {% endif %}
       </td>
       <td><a rel="utctimestamp" href="{{url_for('catalog_node', node_name=node.name)}}">{{node.catalog_timestamp}}</a></td>
       <td>
