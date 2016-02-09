@@ -1,11 +1,14 @@
 {% extends 'layout.html' %}
 {% import '_macros.html' as macros %}
 {% block content %}
+{% if config.REFRESH_RATE > 0 %}
+<meta http-equiv="refresh" content="{{config.REFRESH_RATE}}">
+{% endif %}
 <div class="ui vertical grid">
   <div class="four column row">
     <div class="column">
       <a href="{{url_for('nodes', env=current_env, status='failed')}}">
-        <h1 class="ui red header no-margin-bottom">
+        <h1 class="ui failed header no-margin-bottom">
           {{stats['failed']}}
           <small>{% if stats['failed']== 1 %} node {% else %} nodes {% endif %}</small>
         </h1>
@@ -14,7 +17,7 @@
     </div>
     <div class="column">
       <a href="{{url_for('nodes', env=current_env, status='noop')}}">
-        <h1 class="ui header purple no-margin-bottom">
+        <h1 class="ui header noop no-margin-bottom">
           {{stats['noop']}}
           <small>{% if stats['noop']== 1 %} node {% else %} nodes {% endif %}</small>
         </h1>
@@ -23,7 +26,7 @@
     </div>
     <div class="column">
       <a href="{{url_for('nodes', env=current_env, status='changed')}}">
-        <h1 class="ui header green no-margin-bottom">
+        <h1 class="ui header changed no-margin-bottom">
           {{stats['changed']}}
           <small>{% if stats['changed']== 1 %} node {% else %} nodes {% endif %}</small>
         </h1>
@@ -32,7 +35,7 @@
     </div>
     <div class="column">
       <a href="{{url_for('nodes', env=current_env, status='unreported')}}">
-        <h1 class="ui header black no-margin-bottom">
+        <h1 class="ui header unreported no-margin-bottom">
           {{ stats['unreported'] }}
           <small>{% if stats['unreported']== 1 %} node {% else %} nodes {% endif %}</small>
         </h1>
@@ -77,7 +80,11 @@
           {% if node.status != 'unchanged' %}
           <tr>
             <td>
-              {{macros.status_counts(status=node.status, node_name=node.name, events=node.events, unreported_time=node.unreported_time, current_env=current_env)}}
+              {% if node.latest_report_hash %}
+                {{macros.status_counts(status=node.status, node_name=node.name, events=node.events, unreported_time=node.unreported_time, current_env=current_env, report_hash=node.latest_report_hash)}}
+              {% else %}
+                {{macros.status_counts(status=node.status, node_name=node.name, events=node.events, unreported_time=node.unreported_time, current_env=current_env)}}
+              {% endif %}
             </td>
             <td>
               <a href="{{url_for('node', env=current_env, node_name=node.name)}}">{{ node.name }}</a>
@@ -93,7 +100,11 @@
             </td>
             <td>
               {% if node.report_timestamp %}
-              <a href="{{url_for('report_latest', env=current_env, node_name=node.name)}}" rel='utctimestamp'>{{ node.report_timestamp }}</a>
+                {% if node.latest_report_hash %}
+                  <a href="{{url_for('report', env=current_env, node_name=node.name, report_id=node.latest_report_hash)}}" rel='utctimestamp'>{{ node.report_timestamp }}</a>
+                {% else %}
+                  <a href="{{url_for('report_latest', env=current_env, node_name=node.name)}}" rel='utctimestamp'>{{ node.report_timestamp }}</a>
+                {% endif %}
               {% else %}
                 <i class="large ban circle icon"></i>
               {% endif %}
