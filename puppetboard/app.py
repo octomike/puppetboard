@@ -16,7 +16,6 @@ from flask import (
     Response, stream_with_context, redirect,
     request
     )
-from flask_wtf.csrf import CsrfProtect
 
 from pypuppetdb import connect
 
@@ -28,7 +27,6 @@ from puppetboard.utils import (
 
 
 app = Flask(__name__)
-CsrfProtect(app)
 
 app.config.from_object('puppetboard.default_settings')
 graph_facts = app.config['GRAPH_FACTS']
@@ -60,14 +58,10 @@ def stream_template(template_name, **context):
     rv.enable_buffering(5)
     return rv
 
-def url_for_pagination(page):
+def url_for_field(field, value):
     args = request.view_args.copy()
-    args['page'] = page
-    return url_for(request.endpoint, **args)
-
-def url_for_environments(env):
-    args = request.view_args.copy()
-    args['env'] = env
+    args.update(request.args.copy())
+    args[field] = value
     return url_for(request.endpoint, **args)
 
 def environments():
@@ -83,8 +77,7 @@ def check_env(env, envs):
     if env != '*' and env not in envs:
         abort(404)
 
-app.jinja_env.globals['url_for_pagination'] = url_for_pagination
-app.jinja_env.globals['url_for_environments'] = url_for_environments
+app.jinja_env.globals['url_for_field'] = url_for_field
 
 @app.context_processor
 def utility_processor():
@@ -136,32 +129,54 @@ def index(env):
     :type env: :obj:`string`
     """
     envs = environments()
+    metrics = {
+        'num_nodes': 0,
+        'num_resources': 0,
+        'avg_resources_node': 0}
     check_env(env, envs)
 
-    # TODO: Would be great if we could parallelize this somehow, doing these
-    # requests in sequence is rather pointless.
-    prefix = 'puppetlabs.puppetdb.query.population'
-    num_nodes = get_or_abort(
-        puppetdb.metric,
-        "{0}{1}".format(prefix, ':type=default,name=num-nodes'))
-    num_resources = get_or_abort(
-        puppetdb.metric,
-        "{0}{1}".format(prefix, ':type=default,name=num-resources'))
-    avg_resources_node = get_or_abort(
-        puppetdb.metric,
-        "{0}{1}".format(prefix, ':type=default,name=avg-resources-per-node'))
-    metrics = {
-        'num_nodes': num_nodes['Value'],
-        'num_resources': num_resources['Value'],
-        'avg_resources_node': "{0:10.0f}".format(avg_resources_node['Value']),
-        }
-
     if env == '*':
-        query = None
+        query = app.config['OVERVIEW_FILTER']
+
+        prefix = 'puppetlabs.puppetdb.population'
+        num_nodes = get_or_abort(
+            puppetdb.metric,
+            "{0}{1}".format(prefix, ':name=num-nodes'))
+        num_resources = get_or_abort(
+            puppetdb.metric,
+            "{0}{1}".format(prefix, ':name=num-resources'))
+        avg_resources_node = get_or_abort(
+            puppetdb.metric,
+            "{0}{1}".format(prefix, ':name=avg-resources-per-node'))
+        metrics['num_nodes'] = num_nodes['Value']
+        metrics['num_resources'] = num_resources['Value']
+        metrics['avg_resources_node'] = "{0:10.0f}".format(
+            avg_resources_node['Value'])
     else:
-        query = '["and", {0}]'.format(
-                ", ".join('["=", "{0}", "{1}"]'.format(field, env)
-                    for field in ['catalog_environment', 'facts_environment']))
+        conditions = ", ".join('["=", "{0}", "{1}"]'.format(field, env)
+                  for field in ['catalog_environment', 'facts_environment'])
+        if app.config['OVERVIEW_FILTER'] != None:
+            conditions += ", {0}".format(app.config['OVERVIEW_FILTER'])
+        query = '["and", {0}]'.format(conditions)
+        num_nodes = get_or_abort(
+            puppetdb._query,
+            'nodes',
+            query='["extract", [["function", "count"]],["and", {0}]]'.format(
+                    ",".join('["=", "{0}", "{1}"]'.format(field, env)
+                        for field in ['catalog_environment', 'facts_environment'])))
+        num_resources = get_or_abort(
+            puppetdb._query,
+            'resources',
+            query='["extract", [["function", "count"]],' \
+                '["=", "environment", "{0}"]]'.format(
+                    env))
+        metrics['num_nodes'] = num_nodes[0]['count']
+        metrics['num_resources'] = num_resources[0]['count']
+        try:
+            metrics['avg_resources_node'] = "{0:10.0f}".format(
+                (num_resources[0]['count'] / num_nodes[0]['count']))
+        except ZeroDivisionError:
+            metrics['avg_resources_node'] = 0
 
     nodes = get_or_abort(puppetdb.nodes,
         query=query,
@@ -368,17 +383,29 @@ def node(env, node_name):
     report_event_counts = {}
 
     for report in reports_events:
-        counts = get_or_abort(puppetdb.event_counts,
-            query='["and", ["=", "environment", "{0}"],' \
-                '["=", "certname", "{1}"], ["=", "report", "{2}"]]'.format(
-                    env,
-                    node_name,
-                    report.hash_),
-            summarize_by="certname")
-        try:
-            report_event_counts[report.hash_] = counts[0]
-        except IndexError:
-            report_event_counts[report.hash_] = {}
+        report_event_counts[report.hash_] = {}
+
+        for event in report.events():
+            if event.status == 'success':
+                try:
+                    report_event_counts[report.hash_]['successes'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['successes'] = 1
+            elif event.status == 'failure':
+                try:
+                    report_event_counts[report.hash_]['failures'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['failures'] = 1
+            elif event.status == 'noop':
+                try:
+                    report_event_counts[report.hash_]['noops'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['noops'] = 1
+            elif event.status == 'skipped':
+                try:
+                    report_event_counts[report.hash_]['skips'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['skips'] = 1
     return render_template(
         'node.html',
         node=node,
@@ -405,6 +432,7 @@ def reports(env, page):
     """
     envs = environments()
     check_env(env, envs)
+    limit = request.args.get('limit', app.config['REPORTS_COUNT'])
 
     if env == '*':
         reports_query = None
@@ -414,11 +442,16 @@ def reports(env, page):
         total_query = '["extract", [["function", "count"]],'\
             '["and", ["=", "environment", "{0}"]]]'.format(env)
 
+    try:
+        paging_args = {'limit': int(limit)}
+        paging_args['offset'] = int((page-1) * paging_args['limit'])
+    except ValueError:
+        paging_args = {}
+
     reports = get_or_abort(puppetdb.reports,
         query=reports_query,
-        limit=app.config['REPORTS_COUNT'],
-        offset=(page-1) * app.config['REPORTS_COUNT'],
-        order_by='[{"field": "start_time", "order": "desc"}]')
+        order_by='[{"field": "start_time", "order": "desc"}]',
+        **paging_args)
     total = get_or_abort(puppetdb._query,
         'reports',
         query=total_query)
@@ -430,35 +463,38 @@ def reports(env, page):
         abort(404)
 
     for report in reports_events:
-        if env == '*':
-            event_count_query = '["and",' \
-                '["=", "certname", "{0}"],' \
-                '["=", "report", "{1}"]]'.format(
-                    report.node,
-                    report.hash_)
-        else:
-            event_count_query = '["and",' \
-                '["=", "environment", "{0}"],' \
-                '["=", "certname", "{1}"],' \
-                '["=", "report", "{2}"]]'.format(
-                    env,
-                    report.node,
-                    report.hash_)
-        counts = get_or_abort(puppetdb.event_counts,
-            query=event_count_query,
-            summarize_by="certname")
-        try:
-            report_event_counts[report.hash_] = counts[0]
-        except IndexError:
-            report_event_counts[report.hash_] = {}
+        report_event_counts[report.hash_] = {}
+
+        for event in report.events():
+            if event.status == 'success':
+                try:
+                    report_event_counts[report.hash_]['successes'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['successes'] = 1
+            elif event.status == 'failure':
+                try:
+                    report_event_counts[report.hash_]['failures'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['failures'] = 1
+            elif event.status == 'noop':
+                try:
+                    report_event_counts[report.hash_]['noops'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['noops'] = 1
+            elif event.status == 'skipped':
+                try:
+                    report_event_counts[report.hash_]['skips'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['skips'] = 1
     return Response(stream_with_context(stream_template(
         'reports.html',
         reports=yield_or_stop(reports),
         reports_count=app.config['REPORTS_COUNT'],
         report_event_counts=report_event_counts,
-        pagination=Pagination(page, app.config['REPORTS_COUNT'], total),
+        pagination=Pagination(page, paging_args.get('limit', total), total),
         envs=envs,
-        current_env=env)))
+        current_env=env,
+        limit=paging_args.get('limit', total))))
 
 
 @app.route('/reports/<node_name>/', defaults={'env': app.config['DEFAULT_ENVIRONMENT'], 'page': 1})
@@ -480,11 +516,17 @@ def reports_node(env, node_name, page):
     check_env(env, envs)
 
     if env == '*':
-        query = '["=", "certname", "{0}"]]'.format(node_name)
+        query = '["=", "certname", "{0}"]'.format(node_name)
+        total_query = '["extract", [["function", "count"]],'\
+            '["=", "certname", "{0}"]'.format(node_name)
     else:
         query='["and",' \
             '["=", "environment", "{0}"],' \
-            '["=", "certname", "{1}"]]'.format(env, node_name),
+            '["=", "certname", "{1}"]]'.format(env, node_name)
+        total_query = '["extract", [["function", "count"]],' \
+            '["and",' \
+            '["=", "environment", "{0}"],' \
+            '["=", "certname", "{1}"]]]'.format(env, node_name)
 
     reports = get_or_abort(puppetdb.reports,
         query=query,
@@ -493,10 +535,7 @@ def reports_node(env, node_name, page):
         order_by='[{"field": "start_time", "order": "desc"}]')
     total = get_or_abort(puppetdb._query,
         'reports',
-        query='["extract", [["function", "count"]],' \
-            '["and", ["=", "environment", "{0}"], ["=", "certname", "{1}"]]]'.format(
-            env,
-            node_name))
+        query=total_query)
     total = total[0]['count']
     reports, reports_events = tee(reports)
     report_event_counts = {}
@@ -505,27 +544,29 @@ def reports_node(env, node_name, page):
         abort(404)
 
     for report in reports_events:
-        if env == '*':
-            event_count_query = '["and",' \
-                '["=", "certname", "{0}"],' \
-                '["=", "report", "{1}"]]'.format(
-                    report.node,
-                    report.hash_)
-        else:
-            event_count_query = '["and",' \
-                '["=", "environment", "{0}"],' \
-                '["=", "certname", "{1}"],' \
-                '["=", "report", "{2}"]]'.format(
-                    env,
-                    report.node,
-                    report.hash_)
-        counts = get_or_abort(puppetdb.event_counts,
-            query=event_count_query,
-            summarize_by="certname")
-        try:
-            report_event_counts[report.hash_] = counts[0]
-        except IndexError:
-            report_event_counts[report.hash_] = {}
+        report_event_counts[report.hash_] = {}
+
+        for event in report.events():
+            if event.status == 'success':
+                try:
+                    report_event_counts[report.hash_]['successes'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['successes'] = 1
+            elif event.status == 'failure':
+                try:
+                    report_event_counts[report.hash_]['failures'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['failures'] = 1
+            elif event.status == 'noop':
+                try:
+                    report_event_counts[report.hash_]['noops'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['noops'] = 1
+            elif event.status == 'skipped':
+                try:
+                    report_event_counts[report.hash_]['skips'] += 1
+                except KeyError:
+                    report_event_counts[report.hash_]['skips'] = 1
     return render_template(
         'reports.html',
         reports=reports,
@@ -534,59 +575,6 @@ def reports_node(env, node_name, page):
         pagination=Pagination(page, app.config['REPORTS_COUNT'], total),
         envs=envs,
         current_env=env)
-
-
-@app.route('/report/latest/<node_name>', defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
-@app.route('/<env>/report/latest/<node_name>')
-def report_latest(env, node_name):
-    """Redirect to the latest report of a given node.
-
-    :param env: Search for reports in this environment
-    :type env: :obj:`string`
-    :param node_name: Find the reports whose certname match this value
-    :type node_name: :obj:`string`
-    """
-    envs = environments()
-    check_env(env, envs)
-
-    if env == '*':
-        node_query = '["=", "certname", "{0}"]'.format(node_name)
-    else:
-        node_query = '["and",' \
-            '["=", "report_environment", "{0}"],' \
-            '["=", "certname", "{1}"]]'.format(env, node_name)
-
-    try:
-        node = next(get_or_abort(puppetdb.nodes,
-            query=node_query,
-            with_status=True))
-    except StopIteration:
-        abort(404)
-
-    if node.latest_report_hash is not None:
-        hash_ = node.latest_report_hash
-    else:
-        if env == '*':
-            query='["and",' \
-                '["=", "certname", "{0}"],' \
-                '["=", "latest_report?", true]]'.format(node.name)
-        else:
-            query='["and",' \
-                '["=", "environment", "{0}"],' \
-                '["=", "certname", "{1}"],' \
-                '["=", "latest_report?", true]]'.format(
-                    env,
-                    node.name)
-
-        reports = get_or_abort(puppetdb.reports, query=query)
-        try:
-            report = next(reports)
-            hash_ = report.hash_
-        except StopIteration:
-            abort(404)
-
-    return redirect(
-        url_for('report', env=env, node_name=node_name, report_id=hash_))
 
 
 @app.route('/report/<node_name>/<report_id>', defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
@@ -659,6 +647,7 @@ def facts(env):
     sorted_facts_dict = sorted(facts_dict.items())
     return render_template('facts.html',
         facts_dict=sorted_facts_dict,
+        facts_len=sum(map(len,facts_dict.values())) + len(facts_dict)*5,
         envs=envs,
         current_env=env)
 
@@ -743,11 +732,11 @@ def query(env):
         select field in the environment block
     :type env: :obj:`string`
     """
-    envs = environments()
-    check_env(env, envs)
-
     if app.config['ENABLE_QUERY']:
-        form = QueryForm()
+        envs = environments()
+        check_env(env, envs)
+
+        form = QueryForm(csrf_enabled=False)
         if form.validate_on_submit():
             if form.query.data[0] == '[':
                 query = form.query.data
@@ -949,3 +938,83 @@ def catalog_compare(env, compare, against):
     else:
         log.warn('Access to catalog interface disabled by administrator')
         abort(403)
+
+@app.route('/radiator', defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
+@app.route('/<env>/radiator')
+def radiator(env):
+    """This view generates a simplified monitoring page
+    akin to the radiator view in puppet dashboard
+    """
+    envs = environments()
+    check_env(env, envs)
+
+    if env == '*':
+        query = None
+        metrics = get_or_abort(
+            puppetdb.metric,
+            'puppetlabs.puppetdb.population:name=num-nodes')
+        num_nodes = metrics['Value']
+    else:
+        query = '["and", {0}]]'.format(
+            ",".join('["=", "{0}", "{1}"]'.format(field, env)
+                for field in ['catalog_environment', 'facts_environment']))
+        metrics = get_or_abort(
+            puppetdb._query,
+            'nodes',
+            query='["extract", [["function", "count"]],{0}'.format(
+                query))
+        num_nodes = metrics[0]['count']
+
+
+    nodes = puppetdb.nodes(
+        query=query,
+        unreported=app.config['UNRESPONSIVE_HOURS'],
+        with_status=True
+        )
+
+
+    stats = {
+        'changed_percent': 0,
+        'changed': 0,
+        'failed_percent': 0,
+        'failed': 0,
+        'noop_percent': 0,
+        'noop': 0,
+        'skipped_percent': 0,
+        'skipped': 0,
+        'unchanged_percent': 0,
+        'unchanged': 0,
+        'unreported_percent': 0,
+        'unreported': 0,
+    }
+
+
+
+    for node in nodes:
+        if node.status == 'unreported':
+            stats['unreported'] += 1
+        elif node.status == 'changed':
+            stats['changed'] += 1
+        elif node.status == 'failed':
+            stats['failed'] += 1
+        elif node.status == 'noop':
+            stats['noop'] += 1
+        elif node.status == 'skipped':
+            stats['skipped'] +=1
+        else:
+            stats['unchanged'] += 1
+
+
+    stats['changed_percent'] = int(100 * stats['changed'] / float(num_nodes))
+    stats['failed_percent'] = int(100 * stats['failed'] / float(num_nodes))
+    stats['noop_percent'] = int(100 * stats['noop'] / float(num_nodes))
+    stats['skipped_percent'] = int(100 * stats['skipped'] / float(num_nodes))
+    stats['unchanged_percent'] = int(100 * stats['unchanged'] / float(num_nodes))
+    stats['unreported_percent'] = int(100 * stats['unreported'] / float(num_nodes))
+
+
+    return render_template(
+        'radiator.html',
+        stats=stats,
+        total=num_nodes
+    )

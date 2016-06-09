@@ -501,10 +501,6 @@ differ too much. As we can't use ``uwsgi_pass`` with gunicorn, the nginx configu
 
 .. code-block:: nginx
 
-    upstream puppetboard {
-        server 127.0.0.1:9090;
-    }
-
     server {
         listen      80;
         server_name puppetboard.example.tld;
@@ -618,7 +614,7 @@ and answer questions related to pypuppetdb and Puppetboard.
 There is also a `GoogleGroup`_ to exchange questions and discussions. Please
 note that this group contains discussions of other Puppet Community projects.
 
-.. _issue: https://github.com/puppet-community/puppetboard/issues
+.. _issue: https://github.com/voxpupuli/puppetboard/issues
 .. _IRCnet: http://www.ircnet.org
 .. _Freenode: http://freenode.net
 .. _GoogleGroup: https://groups.google.com/forum/?hl=en#!forum/puppet-community
@@ -673,6 +669,15 @@ If you'd like a more elaborate guide on how to write and format your commit
 messages have a look at this post by `Tim Pope`_.
 
 .. _Tim Pope: http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html
+
+Examples
+========
+
+`vagrant-puppetboard`_
+
+.. _vagrant-puppetboard: https://github.com/visibilityspots/vagrant-puppet/tree/puppetboard
+
+A vagrant project to show off the puppetboard functionallity using the puppetboard puppet module on a puppetserver with puppetdb.
 
 Screenshots
 ===========
