@@ -9,7 +9,7 @@ if sys.argv[-1] == 'publish':
     os.system('python setup.py sdist upload')
     sys.exit()
 
-VERSION = "0.1.3"
+VERSION = "0.2.0"
 
 with codecs.open('README.rst', encoding='utf-8') as f:
     README = f.read()
@@ -20,8 +20,8 @@ with codecs.open('CHANGELOG.rst', encoding='utf-8') as f:
 setup(
     name='puppetboard',
     version=VERSION,
-    author='Daniele Sluijters',
-    author_email='daniele.sluijters+pypi@gmail.com',
+    author='Corey Hammerton',
+    author_email='corey.hammerton@gmail.com',
     packages=find_packages(),
     url='https://github.com/voxpupuli/puppetboard',
     license='Apache License 2.0',
@@ -30,10 +30,10 @@ setup(
     long_description='\n'.join((README, CHANGELOG)),
     install_requires=[
         "Flask >= 0.10.1",
-        "Flask-WTF >= 0.9.4, <= 0.9.5",
-        "WTForms < 2.0",
-        "pypuppetdb >= 0.2.1, < 0.3.0",
-        ],
+        "Flask-WTF >= 0.12, <= 0.13",
+        "WTForms >= 2.0, < 3.0",
+        "pypuppetdb >= 0.3.0, < 0.4.0",
+    ],
     keywords="puppet puppetdb puppetboard",
     classifiers=[
         'Development Status :: 3 - Alpha',
@@ -49,5 +49,5 @@ setup(
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.2',
         'Programming Language :: Python :: 3.3',
-        ],
+    ],
 )

@@ -2,6 +2,12 @@
 Puppetboard
 ###########
 
+.. image:: https://travis-ci.org/voxpupuli/puppetboard.svg?branch=master
+   :target:  https://travis-ci.org/voxpupuli/puppetboard
+
+.. image:: https://coveralls.io/repos/github/voxpupuli/puppetboard/badge.svg?branch=master
+   :target:  https://coveralls.io/github/voxpupuli/puppetboard?branch=master
+
 Puppetboard is a web interface to `PuppetDB`_ aiming to replace the reporting
 functionality of `Puppet Dashboard`_.
 
@@ -114,6 +120,13 @@ Native packages for your operating system will be provided in the near future.
 .. _OpenSuSE 12/13: https://build.opensuse.org/package/show/systemsmanagement:puppet/python-puppetboard
 .. _SuSE LE 11 SP3: https://build.opensuse.org/package/show/systemsmanagement:puppet/python-puppetboard
 
+Docker Images
+^^^^^^^^^^^^^
+
+A `Dockerfile`_ was added to the source-code in the 0.2.0 release. An officially
+image is planned for the 0.2.x series.
+
+.. _Dockerfile: https://github.com/voxpupuli/puppetboard/blob/master/Dockerfile
 
 Development
 -----------
@@ -286,6 +299,24 @@ puppetboard directory:
     from puppetboard.app import app as application
 
 Make sure this file is readable by the user the webserver runs as.
+
+Flask requires a static secret_key in order to protect itself from CSRF exploits.
+The default secret_key in ``default_settings.py`` generates a random 24 character
+string, however this string is re-generated on each request under httpd >= 2.4.
+To generate your own secret_key create a python script with the following content
+and run it once:
+
+.. code-block:: python
+
+    import os
+
+    print os.random(24)
+
+Copy the output and add the following to your ``wsgi.py`` file:
+
+.. code-block:: python
+
+   application.secret_key = '<your secret key>'
 
 The last thing we need to do is configure Apache.
 
