@@ -206,6 +206,11 @@ def index(env):
         'noop': 0
     }
 
+    # pre-load all lagerregal_urls with one request
+    lagerregal_urls =  {}
+    for u in puppetdb.facts(name='lagerregal_url'):
+        lagerregal_urls[u.node] = u.value
+
     for node in nodes:
         if node.status == 'unreported':
             stats['unreported'] += 1
@@ -220,11 +225,7 @@ def index(env):
 
         if node.status != 'unchanged':
             nodes_overview.append(node)
-        facts = node.facts()
-        try:
-            node.lagerregal = node.fact('lagerregal_url').value
-        except StopIteration:
-            node.lagerregal = 'unknown'
+        node.lagerregal = lagerregal_urls[str(node)]
 
     return render_template(
         'index.html',
@@ -267,12 +268,14 @@ def nodes(env):
         unreported=app.config['UNRESPONSIVE_HOURS'],
         with_status=True)
     nodes = []
+    
+    # pre-load all lagerregal_urls with one request
+    lagerregal_urls =  {}
+    for u in puppetdb.facts(name='lagerregal_url'):
+        lagerregal_urls[u.node] = u.value
+
     for node in yield_or_stop(nodelist):
-        facts = node.facts()
-        try:
-            node.lagerregal = node.fact('lagerregal_url').value
-        except StopIteration:
-            node.lagerregal = 'unknown'
+        node.lagerregal = lagerregal_urls[str(node)]
         if status_arg:
             if node.status == status_arg:
                 nodes.append(node)
