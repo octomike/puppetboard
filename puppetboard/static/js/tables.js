@@ -11,7 +11,11 @@
   }
 
   $('thead th.date').data('sortBy', function(th, td, tablesort) {
-    return moment.utc(td.text()).unix();
+    ts = moment.utc(td.text());
+    if (ts.isValid())
+        return ts.unix();
+    else
+        return 0;
   });
 
   $('input.filter-table').parent('div').removeClass('hide');

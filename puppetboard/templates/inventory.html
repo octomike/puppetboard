@@ -15,7 +15,14 @@
     {% for node, facts in fact_data.iteritems() %}
     <tr>
       {% for name in fact_names %}
-      <td><a href="{{url_for('node', env=current_env, node_name=node)}}">{{facts.get(name, 'undef')}}</a></td>
+        {% set item = facts.get(name, 'undef') %}
+        {% if item.startswith('http://') or item.startswith('https://') %}
+          <td><a href="{{item}}"><i class='large darkblue archive icon'></i</a></td>
+        {% elif item=='undef' %}
+          <td><i class="large ban icon"></i></td>
+        {% else %}
+          <td><a href="{{url_for('node', env=current_env, node_name=node)}}">{{item}}</a></td>
+        {% endif %}
       {% endfor %}
     </tr>
     {% endfor %}
