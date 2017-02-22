@@ -346,7 +346,8 @@ def nodes(env):
         lagerregal_urls[u.node] = u.value
 
     for node in yield_or_stop(nodelist):
-        node.lagerregal = lagerregal_urls[str(node)]
+        if str(node) in lagerregal_urls:
+            node.lagerregal = lagerregal_urls[str(node)]
         if status_arg:
             if node.status == status_arg:
                 nodes.append(node)
