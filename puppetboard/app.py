@@ -225,7 +225,8 @@ def index(env):
 
         if node.status != 'unchanged':
             nodes_overview.append(node)
-        node.lagerregal = lagerregal_urls[str(node)]
+        if str(node) in lagerregal_urls:
+            node.lagerregal = lagerregal_urls[str(node)]
 
     return render_template(
         'index.html',
