@@ -20,6 +20,7 @@ As of version 0.1.0 and higher, Puppetboard **requires** PuppetDB 3.
 .. _PuppetDB: http://docs.puppetlabs.com/puppetdb/latest/index.html
 .. _Puppet Dashboard: http://docs.puppetlabs.com/dashboard/
 .. _Flask: http://flask.pocoo.org
+.. _FlaskSession: http://flask.pocoo.org/docs/0.11/quickstart/#sessions
 
 At the current time of writing, Puppetboard supports the following Python versions:
     * Python 2.6
@@ -109,12 +110,12 @@ Native packages for your operating system will be provided in the near future.
 +-------------------+-----------+--------------------------------------------+
 | `ArchLinux`_      | available | Maintained by `Tim Meusel`_                |
 +-------------------+-----------+--------------------------------------------+
-| `OpenBSD`_        | available | Maintained by `Jasper Lievisse Adriaanse`_ |
+| `OpenBSD`_        | available | Maintained by `Sebastian Reitenbach`_      |
 +-------------------+-----------+--------------------------------------------+
 
 .. _ArchLinux: https://aur.archlinux.org/packages/python2-puppetboard/
 .. _Tim Meusel: https://github.com/bastelfreak
-.. _Jasper Lievisse Adriaanse: https://github.com/jasperla
+.. _Sebastian Reitenbach: https://github.com/buzzdeee
 .. _OpenBSD: http://www.openbsd.org/cgi-bin/cvsweb/ports/www/puppetboard/
 .. _OpenSuSE Build Service: https://build.opensuse.org/package/show/systemsmanagement:puppet/python-puppetboard
 .. _OpenSuSE 12/13: https://build.opensuse.org/package/show/systemsmanagement:puppet/python-puppetboard
@@ -127,6 +128,20 @@ A `Dockerfile`_ was added to the source-code in the 0.2.0 release. An officially
 image is planned for the 0.2.x series.
 
 .. _Dockerfile: https://github.com/voxpupuli/puppetboard/blob/master/Dockerfile
+
+Usage:
+.. code-block:: bash
+  $ docker build -t puppetboard .
+  $ docker run -it -p 9080:80 -v /etc/puppetlabs/puppet/ssl:/etc/puppetlabs/puppet/ssl \
+    -e PUPPETDB_HOST=<hostname> \
+    -e PUPPETDB_PORT=8081 \
+    -e PUPPETDB_SSL_VERIFY=/etc/puppetlabs/puppetdb/ssl/ca.pem \
+    -e PUPPETDB_KEY=/etc/puppetlabs/puppetdb/ssl/private.pem \
+    -e PUPPETDB_CERT=/etc/puppetlabs/puppetdb/ssl/public.pem \
+    -e INVENTORY_FACTS='Hostname,fqdn, IP Address,ipaddress' \
+    -e ENABLE_CATALOG=true \
+    -e GRAPH_FACTS='architecture,puppetversion,osfamily' \
+    puppetboard
 
 Development
 -----------
@@ -204,6 +219,9 @@ Other settings that might be interesting in no particular order:
 * ``ENABLE_QUERY``: Defaults to ``True`` causing a Query tab to show up in the
   web interface allowing users to write and execute arbitrary queries against
   a set of endpoints in PuppetDB. Change this to ``False`` to disable this.
+* ``GRAPH_TYPE```: Specify the type of graph to display.   Default is
+  pie, other good option is donut.   Other choices can be found here:
+  `_C3JS_documentation`
 * ``GRAPH_FACTS``: A list of fact names to tell PuppetBoard to generate a
   pie-chart on the fact page. With some fact values being unique per node,
   like ipaddress, uuid, and serial number, as well as structured facts it was
@@ -221,11 +239,12 @@ Other settings that might be interesting in no particular order:
 * ``REPORTS_COUNT``: Defaults to ``10`` the limit of the number of reports
   to load on the node or any reports page.
 * ``OFFLINE_MODE``: If set to ``True`` load static assets (jquery,
-  semantic-ui, tablesorter, etc) from the local web server instead of a CDN.
+  semantic-ui, etc) from the local web server instead of a CDN.
   Defaults to ``False``.
 
 .. _pypuppetdb documentation: http://pypuppetdb.readthedocs.org/en/v0.1.0/quickstart.html#ssl
 .. _Flask documentation: http://flask.pocoo.org/docs/0.10/quickstart/#sessions
+.. _C3JS_documentation:  http://c3js.org/examples.html#chart
 
 Puppet Enterprise
 -----------------
@@ -300,17 +319,19 @@ puppetboard directory:
 
 Make sure this file is readable by the user the webserver runs as.
 
-Flask requires a static secret_key in order to protect itself from CSRF exploits.
-The default secret_key in ``default_settings.py`` generates a random 24 character
-string, however this string is re-generated on each request under httpd >= 2.4.
+Flask requires a static secret_key, see `FlaskSession`_, in order to protect
+itself from CSRF exploits.  The default secret_key in ``default_settings.py``
+generates a random 24 character string, however this string is re-generated
+on each request under httpd >= 2.4.
+
 To generate your own secret_key create a python script with the following content
 and run it once:
 
 .. code-block:: python
 
     import os
-
-    print os.random(24)
+    os.urandom(24)
+    '\xfd{H\xe5<\x95\xf9\xe3\x96.5\xd1\x01O<!\xd5\xa2\xa0\x9fR"\xa1\xa8'
 
 Copy the output and add the following to your ``wsgi.py`` file:
 
@@ -332,7 +353,7 @@ Here is a sample configuration for Debian and Ubuntu:
         CustomLog /var/log/apache2/puppetboard.access.log combined
 
         Alias /static /usr/local/lib/pythonX.Y/dist-packages/puppetboard/static
-        <Directory /usr/lib/python2.X/dist-packages/puppetboard/static>
+        <Directory /usr/local/lib/pythonX.X/dist-packages/puppetboard/static>
             Satisfy Any
             Allow from all
         </Directory>
@@ -662,11 +683,11 @@ Some people have already started building things with and around Puppetboard.
 
 Packages
 --------
-* An OpenBSD port is being maintained by `Jasper Lievisse Adriaanse`_ and can be viewed `here <http://www.openbsd.org/cgi-bin/cvsweb/ports/www/puppetboard/>`_.
+* An OpenBSD port is being maintained by `Sebastian Reitenbach`_ and can be viewed `here <http://www.openbsd.org/cgi-bin/cvsweb/ports/www/puppetboard/>`_.
 
 * A Docker image is being maintained by `Julien K.`_ and can be viewed `here <https://registry.hub.docker.com/u/kassis/puppetboard/>`_.
 
-.. _Jasper Lievisse Adriaanse: https://github.com/jasperla
+.. _Sebastian Reitenbach: https://github.com/buzzdeee
 .. _Julien K.: https://github.com/juliengk
 
 Contributing

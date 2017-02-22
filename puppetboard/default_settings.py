@@ -15,10 +15,13 @@ UNRESPONSIVE_HOURS = 2
 ENABLE_QUERY = True
 LOCALISE_TIMESTAMP = True
 LOGLEVEL = 'info'
-REPORTS_COUNT = 10
+NORMAL_TABLE_COUNT = 100
+LITTLE_TABLE_COUNT = 10
+TABLE_COUNT_SELECTOR = [10, 20, 50, 100, 500]
 OFFLINE_MODE = False
 ENABLE_CATALOG = False
 OVERVIEW_FILTER = None
+GRAPH_TYPE = 'pie'
 GRAPH_FACTS = ['architecture',
                'clientversion',
                'domain',
@@ -38,3 +41,5 @@ INVENTORY_FACTS = [('Hostname', 'fqdn'),
                    ('Kernel Version', 'kernelrelease'),
                    ('Puppet Version', 'puppetversion'), ]
 REFRESH_RATE = 30
+DAILY_REPORTS_CHART_ENABLED = True
+DAILY_REPORTS_CHART_DAYS = 8

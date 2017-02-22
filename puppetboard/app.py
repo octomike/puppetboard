@@ -8,25 +8,46 @@ try:
     from urllib import unquote
 except ImportError:
     from urllib.parse import unquote
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import tee
 
 from flask import (
     Flask, render_template, abort, url_for,
     Response, stream_with_context, redirect,
-    request, session
+    request, session, jsonify
 )
 
 from pypuppetdb import connect
+from pypuppetdb.errors import EmptyResponseError
 from pypuppetdb.QueryBuilder import *
 
 from puppetboard.forms import (CatalogForm, QueryForm)
 from puppetboard.utils import (
-    get_or_abort, yield_or_stop,
-    jsonprint, prettyprint, Pagination
+    get_or_abort, yield_or_stop, get_db_version,
+    jsonprint, prettyprint
 )
+from puppetboard.dailychart import get_daily_reports_chart
 
-DEFAULT_ORDER_BY = '[{"field": "start_time", "order": "desc"}]'
+import werkzeug.exceptions as ex
+
+from . import __version__
+
+REPORTS_COLUMNS = [
+    {'attr': 'end', 'filter': 'end_time',
+     'name': 'End time', 'type': 'datetime'},
+    {'attr': 'status', 'name': 'Status', 'type': 'status'},
+    {'attr': 'certname', 'name': 'Certname', 'type': 'node'},
+    {'attr': 'version', 'filter': 'configuration_version',
+     'name': 'Configuration version'},
+    {'attr': 'agent_version', 'filter': 'puppet_version',
+     'name': 'Agent version'},
+]
+
+CATALOGS_COLUMNS = [
+    {'attr': 'certname', 'name': 'Certname', 'type': 'node'},
+    {'attr': 'catalog_timestamp', 'name': 'Compile Time'},
+    {'attr': 'form', 'name': 'Compare'},
+]
 
 app = Flask(__name__)
 
@@ -52,6 +73,11 @@ if not isinstance(numeric_level, int):
     raise ValueError('Invalid log level: %s' % app.config['LOGLEVEL'])
 logging.basicConfig(level=numeric_level)
 log = logging.getLogger(__name__)
+
+
+@app.template_global()
+def version():
+    return __version__
 
 
 def stream_template(template_name, **context):
@@ -94,6 +120,26 @@ def utility_processor():
     return dict(now=now)
 
 
+#
+# 204 doesn't have a mapping in werkzeug, we need to define a custom
+# class and then set it to the mappings.
+#
+class NoContent(ex.HTTPException):
+    code = 204
+    description = '<p>No content</p'
+
+abort.mapping[204] = NoContent
+
+try:
+    @app.errorhandler(204)
+    def no_content(e):
+        return '', 204
+except KeyError:
+    @app.errorhandler(EmptyResponseError)
+    def no_content(e):
+        return '', 204
+
+
 @app.errorhandler(400)
 def bad_request(e):
     envs = environments()
@@ -103,7 +149,7 @@ def bad_request(e):
 @app.errorhandler(403)
 def forbidden(e):
     envs = environments()
-    return render_template('403.html', envs=envs), 400
+    return render_template('403.html', envs=envs), 403
 
 
 @app.errorhandler(404)
@@ -146,15 +192,23 @@ def index(env):
         query = app.config['OVERVIEW_FILTER']
 
         prefix = 'puppetlabs.puppetdb.population'
+        query_type = ''
+
+        # Puppet DB version changed the query format from 3.2.0
+        # to 4.0 when querying mbeans
+        if get_db_version(puppetdb) < (4, 0, 0):
+            query_type = 'type=default,'
+
         num_nodes = get_or_abort(
             puppetdb.metric,
-            "{0}{1}".format(prefix, ':name=num-nodes'))
+            "{0}{1}".format(prefix, ':%sname=num-nodes' % query_type))
         num_resources = get_or_abort(
             puppetdb.metric,
-            "{0}{1}".format(prefix, ':name=num-resources'))
+            "{0}{1}".format(prefix, ':%sname=num-resources' % query_type))
         avg_resources_node = get_or_abort(
             puppetdb.metric,
-            "{0}{1}".format(prefix, ':name=avg-resources-per-node'))
+            "{0}{1}".format(prefix,
+                            ':%sname=avg-resources-per-node' % query_type))
         metrics['num_nodes'] = num_nodes['Value']
         metrics['num_resources'] = num_resources['Value']
         metrics['avg_resources_node'] = "{0:10.0f}".format(
@@ -168,7 +222,7 @@ def index(env):
         num_nodes_query.add_field(FunctionOperator('count'))
         num_nodes_query.add_query(query)
 
-        if app.config['OVERVIEW_FILTER'] != None:
+        if app.config['OVERVIEW_FILTER'] is not None:
             query.add(app.config['OVERVIEW_FILTER'])
 
         num_resources_query = ExtractOperator()
@@ -254,16 +308,32 @@ def nodes(env):
     :type env: :obj:`string`
     """
     envs = environments()
+    status_arg = request.args.get('status', '')
     check_env(env, envs)
 
-    if env == '*':
-        query = None
-    else:
-        query = AndOperator()
+    query = AndOperator()
+
+    if env != '*':
         query.add(EqualsOperator("catalog_environment", env))
         query.add(EqualsOperator("facts_environment", env))
 
-    status_arg = request.args.get('status', '')
+    if status_arg in ['failed', 'changed', 'unchanged']:
+        query.add(EqualsOperator('latest_report_status', status_arg))
+    elif status_arg == 'unreported':
+        unreported = datetime.datetime.utcnow()
+        unreported = (unreported -
+                      timedelta(hours=app.config['UNRESPONSIVE_HOURS']))
+        unreported = unreported.replace(microsecond=0).isoformat()
+
+        unrep_query = OrOperator()
+        unrep_query.add(NullOperator('report_timestamp', True))
+        unrep_query.add(LessEqualOperator('report_timestamp', unreported))
+
+        query.add(unrep_query)
+
+    if len(query.operations) == 0:
+        query = None
+
     nodelist = puppetdb.nodes(
         query=query,
         unreported=app.config['UNRESPONSIVE_HOURS'],
@@ -307,14 +377,11 @@ def inventory(env):
     envs = environments()
     check_env(env, envs)
 
-    fact_desc = []     # a list of fact descriptions to go
+    headers = []        # a list of fact descriptions to go
     # in the table header
     fact_names = []     # a list of inventory fact names
-    factvalues = {}     # values of the facts for all the nodes
-    # indexed by node name and fact name
-    nodedata = {}     # a dictionary containing list of inventoried
-    # facts indexed by node name
-    nodelist = set()  # a set of node names
+    fact_data = {}      # a multidimensional dict for node and
+    # fact data
 
     # load the list of items/facts we want in our inventory
     try:
@@ -328,8 +395,8 @@ def inventory(env):
 
     # generate a list of descriptions and a list of fact names
     # from the list of tuples inv_facts.
-    for description, name in inv_facts:
-        fact_desc.append(description)
+    for desc, name in inv_facts:
+        headers.append(desc)
         fact_names.append(name)
 
     query = AndOperator()
@@ -344,31 +411,26 @@ def inventory(env):
     # get all the facts from PuppetDB
     facts = puppetdb.facts(query=query)
 
-    # convert the json in easy to access data structure
     for fact in facts:
-        factvalues[fact.node, fact.name] = fact.value
-        nodelist.add(fact.node)
+        if fact.node not in fact_data:
+            fact_data[fact.node] = {}
 
-    # generate the per-host data
-    for node in nodelist:
-        nodedata[node] = []
-        for fact_name in fact_names:
-            try:
-                nodedata[node].append(factvalues[node, fact_name])
-            except KeyError:
-                nodedata[node].append("undef")
+        fact_data[fact.node][fact.name] = fact.value
 
     return Response(stream_with_context(
-        stream_template('inventory.html',
-                        nodedata=nodedata,
-                        fact_desc=fact_desc,
-                        envs=envs,
-                        current_env=env)))
+        stream_template(
+            'inventory.html',
+            headers=headers,
+            fact_names=fact_names,
+            fact_data=fact_data,
+            envs=envs,
+            current_env=env
+        )))
 
 
-@app.route('/node/<node_name>',
+@app.route('/node/<node_name>/',
            defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
-@app.route('/<env>/node/<node_name>')
+@app.route('/<env>/node/<node_name>/')
 def node(env, node_name):
     """Display a dashboard for a node showing as much data as we have on that
     node. This includes facts and reports but not Resources as that is too
@@ -427,170 +489,153 @@ def node(env, node_name):
         'node.html',
         node=node,
         facts=yield_or_stop(facts),
-        reports=yield_or_stop(reports),
-        reports_count=app.config['REPORTS_COUNT'],
-        report_event_counts=report_event_counts,
         envs=envs,
-        current_env=env)
+        current_env=env,
+        columns=REPORTS_COLUMNS[:2])
 
 
 @app.route('/reports/',
-           defaults={'env': app.config['DEFAULT_ENVIRONMENT'], 'page': 1})
-@app.route('/<env>/reports/', defaults={'page': 1})
-@app.route('/<env>/reports/page/<int:page>')
-def reports(env, page):
-    """Displays a list of reports and status from all nodes, retreived using the
-    reports endpoint, sorted by start_time.
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT'],
+                     'node_name': None})
+@app.route('/<env>/reports/', defaults={'node_name': None})
+@app.route('/reports/<node_name>/',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
+@app.route('/<env>/reports/<node_name>')
+def reports(env, node_name):
+    """Query and Return JSON data to reports Jquery datatable
 
     :param env: Search for all reports in this environment
     :type env: :obj:`string`
-    :param page: Calculates the offset of the query based on the report count
-        and this value
-    :type page: :obj:`int`
     """
     envs = environments()
     check_env(env, envs)
-    limit = request.args.get('limit', app.config['REPORTS_COUNT'])
-    reports_query = None
-    total_query = ExtractOperator()
-
-    total_query.add_field(FunctionOperator("count"))
-
-    if env != '*':
-        reports_query = EqualsOperator("environment", env)
-        total_query.add_query(reports_query)
-
-    try:
-        paging_args = {'limit': int(limit)}
-        paging_args['offset'] = int((page - 1) * paging_args['limit'])
-    except ValueError:
-        paging_args = {}
-
-    reports = get_or_abort(puppetdb.reports,
-                           query=reports_query,
-                           order_by=DEFAULT_ORDER_BY,
-                           **paging_args)
-    total = get_or_abort(puppetdb._query,
-                         'reports',
-                         query=total_query)
-    total = total[0]['count']
-    reports, reports_events = tee(reports)
-    report_event_counts = {}
-
-    if total == 0 and page != 1:
-        abort(404)
-
-    for report in reports_events:
-        report_event_counts[report.hash_] = {}
-
-        for event in report.events():
-            if event.status == 'success':
-                try:
-                    report_event_counts[report.hash_]['successes'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['successes'] = 1
-            elif event.status == 'failure':
-                try:
-                    report_event_counts[report.hash_]['failures'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['failures'] = 1
-            elif event.status == 'noop':
-                try:
-                    report_event_counts[report.hash_]['noops'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['noops'] = 1
-            elif event.status == 'skipped':
-                try:
-                    report_event_counts[report.hash_]['skips'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['skips'] = 1
-    return Response(stream_with_context(stream_template(
-        'reports.html',
-        reports=yield_or_stop(reports),
-        reports_count=app.config['REPORTS_COUNT'],
-        report_event_counts=report_event_counts,
-        pagination=Pagination(page, paging_args.get('limit', total), total),
-        envs=envs,
-        current_env=env,
-        limit=paging_args.get('limit', total))))
-
-
-@app.route('/reports/<node_name>/',
-           defaults={'env': app.config['DEFAULT_ENVIRONMENT'], 'page': 1})
-@app.route('/<env>/reports/<node_name>', defaults={'page': 1})
-@app.route('/<env>/reports/<node_name>/page/<int:page>')
-def reports_node(env, node_name, page):
-    """Fetches all reports for a node and processes them eventually rendering
-    a table displaying those reports.
-
-    :param env: Search for reports in this environment
-    :type env: :obj:`string`
-    :param node_name: Find the reports whose certname match this value
-    :type node_name: :obj:`string`
-    :param page: Calculates the offset of the query based on the report count
-        and this value
-    :type page: :obj:`int`
-    """
-    envs = environments()
-    check_env(env, envs)
-    query = AndOperator()
-    total_query = ExtractOperator()
-
-    total_query.add_field(FunctionOperator("count"))
-
-    if env != '*':
-        query.add(EqualsOperator("environment", env))
-
-    query.add(EqualsOperator("certname", node_name))
-    total_query.add_query(query)
-
-    reports = get_or_abort(puppetdb.reports,
-                           query=query,
-                           limit=app.config['REPORTS_COUNT'],
-                           offset=(page - 1) * app.config['REPORTS_COUNT'],
-                           order_by=DEFAULT_ORDER_BY)
-    total = get_or_abort(puppetdb._query,
-                         'reports',
-                         query=total_query)
-    total = total[0]['count']
-    reports, reports_events = tee(reports)
-    report_event_counts = {}
-
-    if total == 0 and page != 1:
-        abort(404)
-
-    for report in reports_events:
-        report_event_counts[report.hash_] = {}
-
-        for event in report.events():
-            if event.status == 'success':
-                try:
-                    report_event_counts[report.hash_]['successes'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['successes'] = 1
-            elif event.status == 'failure':
-                try:
-                    report_event_counts[report.hash_]['failures'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['failures'] = 1
-            elif event.status == 'noop':
-                try:
-                    report_event_counts[report.hash_]['noops'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['noops'] = 1
-            elif event.status == 'skipped':
-                try:
-                    report_event_counts[report.hash_]['skips'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['skips'] = 1
     return render_template(
         'reports.html',
-        reports=reports,
-        reports_count=app.config['REPORTS_COUNT'],
-        report_event_counts=report_event_counts,
-        pagination=Pagination(page, app.config['REPORTS_COUNT'], total),
         envs=envs,
-        current_env=env)
+        current_env=env,
+        node_name=node_name,
+        columns=REPORTS_COLUMNS)
+
+
+@app.route('/reports/json',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT'],
+                     'node_name': None})
+@app.route('/<env>/reports/json', defaults={'node_name': None})
+@app.route('/reports/<node_name>/json',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
+@app.route('/<env>/reports/<node_name>/json')
+def reports_ajax(env, node_name):
+    """Query and Return JSON data to reports Jquery datatable
+
+    :param env: Search for all reports in this environment
+    :type env: :obj:`string`
+    """
+    draw = int(request.args.get('draw', 0))
+    start = int(request.args.get('start', 0))
+    length = int(request.args.get('length', app.config['NORMAL_TABLE_COUNT']))
+    paging_args = {'limit': length, 'offset': start}
+    search_arg = request.args.get('search[value]')
+    order_column = int(request.args.get('order[0][column]', 0))
+    order_filter = REPORTS_COLUMNS[order_column].get(
+        'filter', REPORTS_COLUMNS[order_column]['attr'])
+    order_dir = request.args.get('order[0][dir]')
+    order_args = '[{"field": "%s", "order": "%s"}]' % (order_filter, order_dir)
+    status_args = request.args.get('columns[1][search][value]', '').split('|')
+    max_col = len(REPORTS_COLUMNS)
+    for i in range(len(REPORTS_COLUMNS)):
+        if request.args.get("columns[%s][data]" % i, None):
+            max_col = i + 1
+
+    envs = environments()
+    check_env(env, envs)
+    reports_query = AndOperator()
+
+    if env != '*':
+        reports_query.add(EqualsOperator("environment", env))
+
+    if node_name:
+        reports_query.add(EqualsOperator("certname", node_name))
+
+    if search_arg:
+        search_query = OrOperator()
+        search_query.add(RegexOperator("certname", r"%s" % search_arg))
+        search_query.add(RegexOperator("puppet_version", r"%s" % search_arg))
+        search_query.add(RegexOperator(
+            "configuration_version", r"%s" % search_arg))
+        reports_query.add(search_query)
+
+    status_query = OrOperator()
+    for status_arg in status_args:
+        if status_arg in ['failed', 'changed', 'unchanged']:
+            arg_query = AndOperator()
+            arg_query.add(EqualsOperator('status', status_arg))
+            arg_query.add(EqualsOperator('noop', False))
+            status_query.add(arg_query)
+            if status_arg == 'unchanged':
+                arg_query = AndOperator()
+                arg_query.add(EqualsOperator('noop', True))
+                arg_query.add(EqualsOperator('noop_pending', False))
+                status_query.add(arg_query)
+        elif status_arg == 'noop':
+            arg_query = AndOperator()
+            arg_query.add(EqualsOperator('noop', True))
+            arg_query.add(EqualsOperator('noop_pending', True))
+            status_query.add(arg_query)
+
+    if len(status_query.operations) == 0:
+        if len(reports_query.operations) == 0:
+            reports_query = None
+    else:
+        reports_query.add(status_query)
+
+    if status_args[0] != 'none':
+        reports = get_or_abort(
+            puppetdb.reports,
+            query=reports_query,
+            order_by=order_args,
+            include_total=True,
+            **paging_args)
+        reports, reports_events = tee(reports)
+        total = None
+    else:
+        reports = []
+        reports_events = []
+        total = 0
+
+    report_event_counts = {}
+    # Create a map from the metrics data to what the templates
+    # use to express the data.
+    report_map = {
+        'success': 'successes',
+        'failure': 'failures',
+        'skipped': 'skips',
+        'noops': 'noop'
+    }
+    for report in reports_events:
+        if total is None:
+            total = puppetdb.total
+
+        report_counts = {'successes': 0, 'failures': 0, 'skips': 0}
+        for metrics in report.metrics:
+            if 'name' in metrics and metrics['name'] in report_map:
+                key_name = report_map[metrics['name']]
+                report_counts[key_name] = metrics['value']
+
+        report_event_counts[report.hash_] = report_counts
+
+    if total is None:
+        total = 0
+
+    return render_template(
+        'reports.json.tpl',
+        draw=draw,
+        total=total,
+        total_filtered=total,
+        reports=reports,
+        report_event_counts=report_event_counts,
+        envs=envs,
+        current_env=env,
+        columns=REPORTS_COLUMNS[:max_col])
 
 
 @app.route('/report/<node_name>/<report_id>',
@@ -655,9 +700,24 @@ def facts(env):
     """
     envs = environments()
     check_env(env, envs)
+    facts = []
+    order_by = '[{"field": "name", "order": "asc"}]'
+
+    if env == '*':
+        facts = get_or_abort(puppetdb.fact_names)
+    else:
+        query = ExtractOperator()
+        query.add_field(str('name'))
+        query.add_query(EqualsOperator("environment", env))
+        query.add_group_by(str("name"))
+
+        for names in get_or_abort(puppetdb._query,
+                                  'facts',
+                                  query=query,
+                                  order_by=order_by):
+            facts.append(names['name'])
 
     facts_dict = collections.defaultdict(list)
-    facts = get_or_abort(puppetdb.fact_names)
     for fact in facts:
         letter = fact[0].upper()
         letter_list = facts_dict[letter]
@@ -809,9 +869,9 @@ def metrics(env):
                            current_env=env)
 
 
-@app.route('/metric/<metric>',
+@app.route('/metric/<path:metric>',
            defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
-@app.route('/<env>/metric/<metric>')
+@app.route('/<env>/metric/<path:metric>')
 def metric(env, metric):
     """Lists all information about the metric of the given name.
 
@@ -823,7 +883,7 @@ def metric(env, metric):
     check_env(env, envs)
 
     name = unquote(metric)
-    metric = puppetdb.metric(metric)
+    metric = get_or_abort(puppetdb.metric, metric)
     return render_template(
         'metric.html',
         name=name,
@@ -832,9 +892,14 @@ def metric(env, metric):
         current_env=env)
 
 
-@app.route('/catalogs', defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
-@app.route('/<env>/catalogs')
-def catalogs(env):
+@app.route('/catalogs',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT'],
+                     'compare': None})
+@app.route('/<env>/catalogs', defaults={'compare': None})
+@app.route('/catalogs/compare/<compare>',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
+@app.route('/<env>/catalogs/compare/<compare>')
+def catalogs(env, compare):
     """Lists all nodes with a compiled catalog.
 
     :param env: Find the nodes with this catalog_environment value
@@ -843,52 +908,79 @@ def catalogs(env):
     envs = environments()
     check_env(env, envs)
 
-    if app.config['ENABLE_CATALOG']:
-        nodenames = []
-        catalog_list = []
-        query = AndOperator()
-
-        if env != '*':
-            query.add(EqualsOperator("catalog_environment", env))
-
-        query.add(NullOperator("catalog_timestamp", False))
-
-        order_by_str = '[{"field": "certname", "order": "asc"}]'
-        nodes = get_or_abort(puppetdb.nodes,
-                             query=query,
-                             with_status=False,
-                             order_by=order_by_str)
-        nodes, temp = tee(nodes)
-
-        for node in temp:
-            nodenames.append(node.name)
-
-        for node in nodes:
-            table_row = {
-                'name': node.name,
-                'catalog_timestamp': node.catalog_timestamp
-            }
-
-            if len(nodenames) > 1:
-                form = CatalogForm()
-
-                form.compare.data = node.name
-                form.against.choices = [(x, x) for x in nodenames
-                                        if x != node.name]
-                table_row['form'] = form
-            else:
-                table_row['form'] = None
-
-            catalog_list.append(table_row)
-
-        return render_template(
-            'catalogs.html',
-            nodes=catalog_list,
-            envs=envs,
-            current_env=env)
-    else:
+    if not app.config['ENABLE_CATALOG']:
         log.warn('Access to catalog interface disabled by administrator')
         abort(403)
+
+    return render_template(
+        'catalogs.html',
+        compare=compare,
+        columns=CATALOGS_COLUMNS,
+        envs=envs,
+        current_env=env)
+
+
+@app.route('/catalogs/json',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT'],
+                     'compare': None})
+@app.route('/<env>/catalogs/json', defaults={'compare': None})
+@app.route('/catalogs/compare/<compare>/json',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
+@app.route('/<env>/catalogs/compare/<compare>/json')
+def catalogs_ajax(env, compare):
+    """Server data to catalogs as JSON to Jquery datatables
+    """
+    draw = int(request.args.get('draw', 0))
+    start = int(request.args.get('start', 0))
+    length = int(request.args.get('length', app.config['NORMAL_TABLE_COUNT']))
+    paging_args = {'limit': length, 'offset': start}
+    search_arg = request.args.get('search[value]')
+    order_column = int(request.args.get('order[0][column]', 0))
+    order_filter = CATALOGS_COLUMNS[order_column].get(
+        'filter', CATALOGS_COLUMNS[order_column]['attr'])
+    order_dir = request.args.get('order[0][dir]', 'asc')
+    order_args = '[{"field": "%s", "order": "%s"}]' % (order_filter, order_dir)
+
+    envs = environments()
+    check_env(env, envs)
+
+    query = AndOperator()
+    if env != '*':
+        query.add(EqualsOperator("catalog_environment", env))
+    if search_arg:
+        query.add(RegexOperator("certname", r"%s" % search_arg))
+    query.add(NullOperator("catalog_timestamp", False))
+
+    nodes = get_or_abort(puppetdb.nodes,
+                         query=query,
+                         include_total=True,
+                         order_by=order_args,
+                         **paging_args)
+
+    catalog_list = []
+    total = None
+    for node in nodes:
+        if total is None:
+            total = puppetdb.total
+
+        catalog_list.append({
+            'certname': node.name,
+            'catalog_timestamp': node.catalog_timestamp,
+            'form': compare,
+        })
+
+    if total is None:
+        total = 0
+
+    return render_template(
+        'catalogs.json.tpl',
+        total=total,
+        total_filtered=total,
+        draw=draw,
+        columns=CATALOGS_COLUMNS,
+        catalogs=catalog_list,
+        envs=envs,
+        current_env=env)
 
 
 @app.route('/catalog/<node_name>',
@@ -910,40 +1002,6 @@ def catalog_node(env, node_name):
                                catalog=catalog,
                                envs=envs,
                                current_env=env)
-    else:
-        log.warn('Access to catalog interface disabled by administrator')
-        abort(403)
-
-
-@app.route('/catalog/submit', methods=['POST'],
-           defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
-@app.route('/<env>/catalog/submit', methods=['POST'])
-def catalog_submit(env):
-    """Receives the submitted form data from the catalogs page and directs
-       the users to the comparison page. Directs users back to the catalogs
-       page if no form submission data is found.
-
-    :param env: This parameter only directs the response page to the right
-       environment. If this environment does not exist return the use to the
-       catalogs page with the right environment.
-    :type env: :obj:`string`
-    """
-    envs = environments()
-    check_env(env, envs)
-
-    if app.config['ENABLE_CATALOG']:
-        form = CatalogForm(request.form)
-
-        form.against.choices = [(form.against.data, form.against.data)]
-        if form.validate_on_submit():
-            compare = form.compare.data
-            against = form.against.data
-            return redirect(
-                url_for('catalog_compare',
-                        env=env,
-                        compare=compare,
-                        against=against))
-        return redirect(url_for('catalogs', env=env))
     else:
         log.warn('Access to catalog interface disabled by administrator')
         abort(403)
@@ -988,10 +1046,13 @@ def radiator(env):
     check_env(env, envs)
 
     if env == '*':
+        query_type = ''
+        if get_db_version(puppetdb) < (4, 0, 0):
+            query_type = 'type=default,'
         query = None
         metrics = get_or_abort(
             puppetdb.metric,
-            'puppetlabs.puppetdb.population:name=num-nodes')
+            'puppetlabs.puppetdb.population:%sname=num-nodes' % query_type)
         num_nodes = metrics['Value']
     else:
         query = AndOperator()
@@ -1043,17 +1104,51 @@ def radiator(env):
         else:
             stats['unchanged'] += 1
 
-    stats['changed_percent'] = int(100 * stats['changed'] / float(num_nodes))
-    stats['failed_percent'] = int(100 * stats['failed'] / float(num_nodes))
-    stats['noop_percent'] = int(100 * stats['noop'] / float(num_nodes))
-    stats['skipped_percent'] = int(100 * stats['skipped'] / float(num_nodes))
-    stats['unchanged_percent'] = int(100 * (stats['unchanged'] /
-                                            float(num_nodes)))
-    stats['unreported_percent'] = int(100 * (stats['unreported'] /
-                                             float(num_nodes)))
+    try:
+        stats['changed_percent'] = int(100 * (stats['changed'] /
+                                              float(num_nodes)))
+        stats['failed_percent'] = int(100 * stats['failed'] / float(num_nodes))
+        stats['noop_percent'] = int(100 * stats['noop'] / float(num_nodes))
+        stats['skipped_percent'] = int(100 * (stats['skipped'] /
+                                              float(num_nodes)))
+        stats['unchanged_percent'] = int(100 * (stats['unchanged'] /
+                                                float(num_nodes)))
+        stats['unreported_percent'] = int(100 * (stats['unreported'] /
+                                                 float(num_nodes)))
+    except ZeroDivisionError:
+        stats['changed_percent'] = 0
+        stats['failed_percent'] = 0
+        stats['noop_percent'] = 0
+        stats['skipped_percent'] = 0
+        stats['unchanged_percent'] = 0
+        stats['unreported_percent'] = 0
+
+    if ('Accept' in request.headers and
+            request.headers["Accept"] == 'application/json'):
+        return jsonify(**stats)
 
     return render_template(
         'radiator.html',
         stats=stats,
         total=num_nodes
     )
+
+
+@app.route('/daily_reports_chart.json',
+           defaults={'env': app.config['DEFAULT_ENVIRONMENT']})
+@app.route('/<env>/daily_reports_chart.json')
+def daily_reports_chart(env):
+    """Return JSON data to generate a bar chart of daily runs.
+
+    If certname is passed as GET argument, the data will target that
+    node only.
+    """
+    certname = request.args.get('certname')
+    result = get_or_abort(
+        get_daily_reports_chart,
+        db=puppetdb,
+        env=env,
+        days_number=app.config['DAILY_REPORTS_CHART_DAYS'],
+        certname=certname,
+    )
+    return jsonify(result=result)

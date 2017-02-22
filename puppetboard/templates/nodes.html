@@ -8,7 +8,7 @@
   <thead>
     <tr>
       <th>Status</th>
-      <th class="default">Hostname</th>
+      <th class="default">Certname</th>
       <th>&nbsp;</th>
       <th class="date default-sort">Catalog</th>
       <th class="date">Report</th>
@@ -45,11 +45,22 @@
       </td>
       <td>
         {% if node.report_timestamp %}
-        <a title='Reports' href="{{url_for('reports_node', env=current_env, node_name=node.name, page=1)}}"><i class='large darkblue book icon'></i></a>
+        <a title='Reports' href="{{url_for('reports', env=current_env, node_name=node.name)}}"><i class='large darkblue book icon'></i></a>
         {% endif %}
       </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+<div class="ui dropdown" style="float:right;">
+  <div class="text">Filter By</div>
+  <i class="dropdown icon"></i>
+  <div class="menu">
+    <a class="item" href="{{url_for_field('status', 'failed')}}">Failed</a>
+    <a class="item" href="{{url_for_field('status', 'changed')}}">Changed</a>
+    <a class="item" href="{{url_for_field('status', 'unchanged')}}">Unchanged</a>
+    <a class="item" href="{{url_for_field('status', 'noop')}}">Noop</a>
+    <a class="item" href="{{url_for_field('status', 'unreported')}}">Unreported</a>
+  </div>
+</div>
 {% endblock content %}
