@@ -455,37 +455,6 @@ def node(env, node_name):
         node.lagerregal = node.fact('lagerregal_url').value
     except StopIteration:
         node.lagerregal = 'unknown'
-    reports = get_or_abort(puppetdb.reports,
-                           query=query,
-                           limit=app.config['REPORTS_COUNT'],
-                           order_by=DEFAULT_ORDER_BY)
-    reports, reports_events = tee(reports)
-    report_event_counts = {}
-
-    for report in reports_events:
-        report_event_counts[report.hash_] = {}
-
-        for event in report.events():
-            if event.status == 'success':
-                try:
-                    report_event_counts[report.hash_]['successes'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['successes'] = 1
-            elif event.status == 'failure':
-                try:
-                    report_event_counts[report.hash_]['failures'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['failures'] = 1
-            elif event.status == 'noop':
-                try:
-                    report_event_counts[report.hash_]['noops'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['noops'] = 1
-            elif event.status == 'skipped':
-                try:
-                    report_event_counts[report.hash_]['skips'] += 1
-                except KeyError:
-                    report_event_counts[report.hash_]['skips'] = 1
     return render_template(
         'node.html',
         node=node,
