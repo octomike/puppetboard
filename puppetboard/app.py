@@ -18,7 +18,6 @@ from flask import (
 )
 
 from pypuppetdb import connect
-from pypuppetdb.errors import EmptyResponseError
 from pypuppetdb.QueryBuilder import *
 
 from puppetboard.forms import (CatalogForm, QueryForm)
@@ -29,6 +28,7 @@ from puppetboard.utils import (
 from puppetboard.dailychart import get_daily_reports_chart
 
 import werkzeug.exceptions as ex
+import CommonMark
 
 from . import __version__
 
@@ -118,26 +118,6 @@ def utility_processor():
         """returns the formated datetime"""
         return datetime.datetime.now().strftime(format)
     return dict(now=now)
-
-
-#
-# 204 doesn't have a mapping in werkzeug, we need to define a custom
-# class and then set it to the mappings.
-#
-class NoContent(ex.HTTPException):
-    code = 204
-    description = '<p>No content</p'
-
-abort.mapping[204] = NoContent
-
-try:
-    @app.errorhandler(204)
-    def no_content(e):
-        return '', 204
-except KeyError:
-    @app.errorhandler(EmptyResponseError)
-    def no_content(e):
-        return '', 204
 
 
 @app.errorhandler(400)
@@ -647,6 +627,8 @@ def report(env, node_name, report_id):
         report = next(reports)
     except StopIteration:
         abort(404)
+
+    report.version = CommonMark.commonmark(report.version)
 
     return render_template(
         'report.html',
