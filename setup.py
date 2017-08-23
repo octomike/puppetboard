@@ -53,8 +53,6 @@ setup(
     long_description='\n'.join((README, CHANGELOG)),
     zip_safe=False,
     install_requires=requirements,
-    tests_require=requirements_test,
-    extras_require={'test': requirements_test},
     keywords="puppet puppetdb puppetboard",
     cmdclass={'test': PyTest},
     classifiers=[

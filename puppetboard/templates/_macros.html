@@ -1,53 +1,3 @@
-{% macro facts_table(facts, current_env, autofocus=False, condensed=False, show_node=False, show_value=True, link_facts=False, margin_top=20, margin_bottom=20) -%}
-<div class="ui fluid icon input hide" style="margin-bottom:20px">
-  <input {% if autofocus %} autofocus="autofocus" {% endif %} class="filter-table" placeholder="Type here to filter...">
-</div>
-<table class="ui very basic {% if condensed %}very{% endif%} compact sortable table" style="table-layout: fixed;">
-  <thead>
-    <tr>
-      {% if show_node %}
-      <th>Node</th>
-      {% else %}
-      <th class="default-sort">Fact</th>
-      {% endif %}
-      {% if show_value %}
-      <th>Value</th>
-      {% endif %}
-    </tr>
-  </thead>
-  <tbody class="searchable">
-    {% for fact in facts %}
-    <tr>
-      {% if show_node %}
-        <td><a href="{{url_for('node', env=current_env, node_name=fact.node)}}">{{fact.node}}</a></td>
-      {% else %}
-        <td><a href="{{url_for('fact', env=current_env, fact=fact.name)}}">{{fact.name}}</a></td>
-      {% endif %}
-      {% if show_value %}
-      <td style="word-wrap:break-word">
-        {% if fact.value is string and fact.value.startswith('http') %}
-          <a href="{{fact.value}}">{{fact.value}}</a>
-        {% elif link_facts %}
-          {% if fact.value is mapping %}
-            <a href="{{url_for('fact_value', env=current_env, fact=fact.name, value=fact.value)}}"><pre>{{fact.value|jsonprint}}</pre></a>
-          {% else %}
-            <a href="{{url_for('fact_value', env=current_env, fact=fact.name, value=fact.value)}}">{{fact.value}}</a>
-          {% endif %}
-        {% else %}
-          {% if fact.value is mapping %}
-            <pre>{{fact.value|jsonprint}}</pre>
-          {% else %}
-            {{fact.value}}
-          {% endif %}
-        {% endif %}
-      </td>
-      {% endif %}
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{%- endmacro %}
-
 {% macro status_counts(caller, status, node_name, events, current_env, unreported_time=False, report_hash=False) -%}
   <a class="ui {{status}} label status" href="{{url_for('report', env=current_env, node_name=node_name, report_id=report_hash)}}">{{ status|upper }}</a>
   {% if status == 'unreported' %}
@@ -59,9 +9,33 @@
   {% endif %}
 {%- endmacro %}
 
+{% macro report_status(caller, status, node_name, metrics, current_env, unreported_time=False, report_hash=False) -%}
+  <a class="ui {{status}} label status" href="{{url_for('report', env=current_env, node_name=node_name, report_id=report_hash)}}">{{ status|upper }}</a>
+  {% if status == 'unreported' %}
+    <span class="ui label status"> {{ unreported_time|upper }} </span>
+  {% else %}
+    {% for metric in config.DISPLAYED_METRICS %}
+      {% set path = metric.split('.') %}
+      {% set title = ' '.join(path) %}
+      {% if metrics[path[0]] and metrics[path[0]][path[1]] %}
+      {% set value = metrics[path[0]][path[1]] %}
+      {% if value != 0 and value|int != value %}
+        {% set format_str = '%.2f' %}
+      {% else %}
+        {% set format_str = '%s' %}
+      {% endif %}
+        <span title="{{ title }}" class="ui small count label {{ title }}">{{ format_str|format(value) }}</span>
+      {% else %}
+        <span title="{{ title }}" class="ui small count label">0</span>
+      {% endif%}
+    {% endfor %}
+  {% endif %}
+{%- endmacro %}
+
 {% macro datatable_init(table_html_id, ajax_url, default_length, length_selector, extra_options=None) -%}
   // Init datatable
   $.fn.dataTable.ext.errMode = 'throw';
+
   var table = $('#{{ table_html_id }}').DataTable({
     // Permit flow auto-readjust (responsive)
     "autoWidth": false,
@@ -78,11 +52,18 @@
     // Paging options
     "lengthMenu": {{ length_selector }},
     "pageLength": {{ default_length }},
+    // Search as regex (does not apply if serverSide)
+    "search": {"regex": true},
     // Default sort
     "order": [[ 0, "desc" ]],
     // Custom options
     {% if extra_options %}{% call extra_options() %}Callback to parent defined options{% endcall %}{% endif %}
   });
+
+  table.on('error', function ( e, settings, json ) {
+    table.clear().draw();
+    $('#facts_table_processing').hide(); })
+
 
   table.on('draw.dt', function(){
     $('#{{ table_html_id }} [rel=utctimestamp]').each(

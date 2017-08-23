@@ -1,7 +1,7 @@
 import pytest
 import os
 from puppetboard import docker_settings
-from puppetboard import app
+import puppetboard.core
 
 try:
     import future.utils
@@ -100,12 +100,14 @@ def test_graph_facts_custom(cleanUpEnv):
     assert 'extra' in facts
 
 
-def test_bad_log_value(cleanUpEnv):
+def test_bad_log_value(cleanUpEnv, mocker):
     os.environ['LOGLEVEL'] = 'g'
     os.environ['PUPPETBOARD_SETTINGS'] = '../puppetboard/docker_settings.py'
     reload(docker_settings)
+
+    puppetboard.core.APP = None
     with pytest.raises(ValueError) as error:
-        reload(app)
+        puppetboard.core.get_app()
 
 
 def test_default_table_selctor(cleanUpEnv):
@@ -116,3 +118,11 @@ def test_env_table_selector(cleanUpEnv):
     os.environ['TABLE_COUNT_SELECTOR'] = '5,15,25'
     reload(docker_settings)
     assert [5, 15, 25] == docker_settings.TABLE_COUNT_SELECTOR
+
+
+def test_env_column_options(cleanUpEnv):
+    os.environ['DISPLAYED_METRICS'] = 'resources.total, events.failure'
+
+    reload(docker_settings)
+    assert ['resources.total',
+            'events.failure'] == docker_settings.DISPLAYED_METRICS
